@@ -123,17 +123,7 @@
 				"relatime",
 				"ro"
 			]
-		},
-    {
-      "destination": "/local-dir",
-      "type": "bind",
-      "source": "__path_to_local_dir__",
-      "options": [
-        "rbind",
-        "rprivate"
-      ]
-    }
-
+		}
 	],
 	"linux": {
 		"resources": {
@@ -147,9 +137,6 @@
 		"namespaces": [
 			{
 				"type": "pid"
-			},
-			{
-				"type": "network"
 			},
 			{
 				"type": "ipc"

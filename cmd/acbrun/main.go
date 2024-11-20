@@ -14,20 +14,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/jessevdk/go-flags"
 	"github.com/tidwall/sjson"
 )
 
 //go:embed config.json
-var configJSON string
+var configJSONTemplate string
 
 var opts struct {
 	// Slice of bool will append 'true' each time the option
 	// is encountered (can be set multiple times, like -vvv)
-	Verbose []bool `short:"v" long:"verbose" description:"Show verbose debug information"`
-	Keep    bool   `long:"keep" description:"Keep temporary working directory"`
+	Verbose      []bool `short:"v" long:"verbose" description:"Show verbose debug information"`
+	Keep         bool   `long:"keep" description:"Keep temporary working directory"`
+	HostNetwork  bool   `long:"host-network" description:"Allow host network access"`
+	BindLocalDir bool   `long:"bind-local-dir" description:"Bind current working directory to /local-dir"`
 }
 
 func ExtractTarGz(gzipStream io.Reader, dst string) {
@@ -201,21 +202,51 @@ func main() {
 		ExtractTarGz(r, rootFS)
 	}
 
-	value, err := sjson.Set(string(configJSON), "process.args", []string{"sh", "-c", command})
+	configJSON := configJSONTemplate
+
+	configJSON, err = sjson.Set(configJSON, "process.args", []string{"sh", "-c", command})
 	if err != nil {
 		panic(err)
 	}
 
-	// TODO use a JSON lib for this
-	// also point to a better location to share
-	value = strings.Replace(value, "__path_to_local_dir__", workingDir, 1)
+	if !opts.HostNetwork {
+		configJSON, err = sjson.Set(configJSON, "linux.namespaces.-1", map[string]string{"type": "network"})
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	if opts.BindLocalDir {
+		actualWorkingDir, err := os.Getwd()
+		if err != nil {
+			panic(err)
+		}
+		configJSON, err = sjson.Set(configJSON, "mounts.-1", map[string]interface{}{
+			"destination": "/local-dir",
+			"type":        "bind",
+			"source":      actualWorkingDir,
+			"options": []string{
+				"rbind",
+				"rprivate",
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+
+	}
+
+	configJSON, err = sjson.Set(configJSON, "process.args", []string{"sh", "-c", command})
+	if err != nil {
+		panic(err)
+	}
 
 	newConfigFile, err := os.Create(filepath.Join(workingDir, "config.json"))
 	if err != nil {
 		panic(err)
 	}
 	defer newConfigFile.Close()
-	_, err = newConfigFile.WriteString(value)
+	_, err = newConfigFile.WriteString(configJSON)
 	if err != nil {
 		panic(err)
 	}
