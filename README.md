@@ -8,9 +8,9 @@ A light wrapper around runc, which requires a tar.gz of a rootfs. This tool does
 
 ## Example run
 
-    $ sudo acbrun --verbose --keep sample-images/alpine-3.20.3.tar.gz e99e5d7440c1f31eaa77d84b8d87a8901efde3a1be445161e17bd9a9ea6707c8 containerName "ls -la"
+    $ sudo acbrun --verbose --keep sample-images/alpine-3.20.3.tar.gz c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 containerName "ls -la"
     keeping temporary working directory: /tmp/2120123023
-    sample-images/alpine-3.20.3.tar.gz sha256sum of e99e5d7440c1f31eaa77d84b8d87a8901efde3a1be445161e17bd9a9ea6707c8 validation complete
+    sample-images/alpine-3.20.3.tar.gz sha256sum of c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 validation complete
     extracting da9db072f522755cbeb85be2b3f84059b70571b229512f1571d9217b77e1087f.tar.gz
     running runc
     total 68
@@ -49,18 +49,33 @@ First make a directory for outputs:
 
 Then download and save files locally
 
-    sudo ./acbrun --bind-local-dir --host-network sample-images/alpine-3.20.3.tar.gz e99e5d7440c1f31eaa77d84b8d87a8901efde3a1be445161e17bd9a9ea6707c8 containerName "echo 'nameserver 8.8.8.8' > /etc/resolv.conf && apk update && cd /local-dir/scratch/ && apk fetch --recursive python3"
+    sudo ./acbrun --bind-local-dir --host-network sample-images/alpine-3.20.3.tar.gz c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 containerName "echo 'nameserver 8.8.8.8' > /etc/resolv.conf && apk update && cd /local-dir/scratch/ && apk fetch --recursive python3"
 
 Then you can use the apk packages offline:
 
-    sudo ./acbrun --bind-local-dir sample-images/alpine-3.20.3.tar.gz e99e5d7440c1f31eaa77d84b8d87a8901efde3a1be445161e17bd9a9ea6707c8 containerName "rm /etc/apk/repositories && apk add --no-network --no-cache --allow-untrusted /local-dir/scratch/*.apk && python3 --version"
+    sudo ./acbrun --bind-local-dir sample-images/alpine-3.20.3.tar.gz c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 containerName "rm /etc/apk/repositories && apk add --no-network --no-cache --allow-untrusted /local-dir/scratch/*.apk && python3 --version"
 
 ## Outputting an Image
 
 use the `--output` flag to export the image after running, for example:
 
-    $ sudo acbrun --output my-output-image.tar.gz sample-images/alpine-3.20.3.tar.gz e99e5d7440c1f31eaa77d84b8d87a8901efde3a1be445161e17bd9a9ea6707c8 containerName "echo hello world > /root/data"
+    $ sudo acbrun --output my-output-image.tar.gz sample-images/alpine-3.20.3.tar.gz c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 containerName "echo hello world > /root/data"
 
 You can then use the new image:
 
     $ sudo acbrun my-output-image.tar.gz skip-sha256-validation containerName "ls -la /root/data && cat /root/data"
+
+You can even load them into docker:
+
+    $ sudo docker load < my-output-image.tar.gz 
+    eb3578682edc: Loading layer [==================================================>]  3.624MB/3.624MB
+    Loaded image ID: sha256:ace010d046a053c4b2cebb168c17296ee48b64e19ecde68f0efc8b64a56585b7
+    alex@perch:~/acbrun$ docker run --rm ace010d046a053c4b2cebb168c17296ee48b64e19ecde68f0efc8b64a56585b7 /bin/sh -c 'ls -la /root && cat /root/data'
+    docker: permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Head "http://%2Fvar%2Frun%2Fdocker.sock/_ping": dial unix /var/run/docker.sock: connect: permission denied.
+    See 'docker run --help'.
+    alex@perch:~/acbrun$ sudo docker run --rm ace010d046a053c4b2cebb168c17296ee48b64e19ecde68f0efc8b64a56585b7 /bin/sh -c 'ls -la /root && cat /root/data'
+    total 12
+    drwx------    2 root     root          4096 Nov 26 22:19 .
+    drwxr-xr-x    1 root     root          4096 Nov 26 22:20 ..
+    -rw-r--r--    1 root     root            12 Nov 26 22:19 data
+    hello world

@@ -216,14 +216,19 @@ func isVerbose(verbose []bool) bool {
 	return len(verbose) > 0
 }
 
-func getSha256String(path string) (string, error) {
+func getSha256String(path string) (string, error) { // TODO FIXME, docker computes the hash AFTER gzip (to make it possible to swap compression algorithims)
 	r, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer r.Close()
+	uncompressedReader, err := gzip.NewReader(r)
+	if err != nil {
+		return "", err
+	}
+	defer uncompressedReader.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, r); err != nil {
+	if _, err := io.Copy(h, uncompressedReader); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
