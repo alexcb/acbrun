@@ -10,12 +10,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 
 	"github.com/jessevdk/go-flags"
+	"github.com/opencontainers/go-digest"
+	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/tidwall/sjson"
 )
 
@@ -29,6 +32,7 @@ var opts struct {
 	Keep         bool   `long:"keep" description:"Keep temporary working directory"`
 	HostNetwork  bool   `long:"host-network" description:"Allow host network access"`
 	BindLocalDir bool   `long:"bind-local-dir" description:"Bind current working directory to /local-dir"`
+	Output       string `long:"output" description:"Output image after execution"`
 }
 
 func ExtractTarGz(gzipStream io.Reader, dst string) {
@@ -94,10 +98,96 @@ func ExtractTarGz(gzipStream io.Reader, dst string) {
 	}
 }
 
+func CreateTarGz(srcDir string, buf io.Writer) error {
+	gw := gzip.NewWriter(buf)
+	defer gw.Close()
+	tw := tar.NewWriter(gw)
+	defer tw.Close()
+
+	absSrcDir, err := filepath.Abs(srcDir)
+	if err != nil {
+		return err
+	}
+
+	filepath.WalkDir(absSrcDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(absSrcDir, path)
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		mode := info.Mode()
+
+		var link string
+		if mode&os.ModeSymlink != 0 {
+			var err error
+			link, err = os.Readlink(path)
+			if err != nil {
+				return err
+			}
+		}
+
+		h, err := tar.FileInfoHeader(info, link)
+		if err != nil {
+			return err
+		}
+		h.Name = relPath
+		err = tw.WriteHeader(h)
+		if err != nil {
+			return err
+		}
+		if mode.IsRegular() {
+			fp, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer fp.Close()
+			_, err = io.Copy(tw, fp)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	return nil
+}
+
+func addFileToArchive(tw *tar.Writer, workingDir, path string) error {
+	file, err := os.Open(filepath.Join(workingDir, path))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	header, err := tar.FileInfoHeader(info, info.Name())
+	if err != nil {
+		return err
+	}
+	header.Name = path
+	err = tw.WriteHeader(header)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(tw, file)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 type Manifest struct {
-	Config   string   `json:"Config"`
-	RepoTags []string `json:"RepoTags"`
-	Layers   []string `json:"Layers"`
+	Config   string   `json:"Config,omitempty"`
+	RepoTags []string `json:"RepoTags,omitempty"`
+	Layers   []string `json:"Layers,omitempty"`
 }
 
 func getLayers(manifestPath string) ([]string, error) {
@@ -124,6 +214,19 @@ func getLayers(manifestPath string) ([]string, error) {
 
 func isVerbose(verbose []bool) bool {
 	return len(verbose) > 0
+}
+
+func getSha256String(path string) (string, error) {
+	r, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer r.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func main() {
@@ -156,27 +259,26 @@ func main() {
 		defer os.RemoveAll(workingDir)
 	}
 
-	r, err := os.Open(image)
+	actualSha256HashHexString, err := getSha256String(image)
 	if err != nil {
 		panic(err)
 	}
 
-	h := sha256.New()
-	if _, err := io.Copy(h, r); err != nil {
-		panic(err)
-	}
-	actualSha256Hash := h.Sum(nil)
-	actualSha256HashHexString := hex.EncodeToString(actualSha256Hash)
-
 	if actualSha256HashHexString != expectedImageSha256Sum {
-		fmt.Fprintf(os.Stderr, "expected sha256 sum %s does not match actual sum of %s: %s\n", expectedImageSha256Sum, image, actualSha256HashHexString)
-		os.Exit(1)
+		if expectedImageSha256Sum == "skip-sha256-validation" {
+			fmt.Fprintf(os.Stderr, "WARNING: continuing due to skip-sha256-validation option (actual value is %s)\n", actualSha256HashHexString)
+		} else {
+			fmt.Fprintf(os.Stderr, "expected sha256 sum %s does not match actual sum of %s: %s\n", expectedImageSha256Sum, image, actualSha256HashHexString)
+			os.Exit(1)
+		}
 	}
 	if verbose {
 		fmt.Fprintf(os.Stderr, "%s sha256sum of %s validation complete\n", image, actualSha256HashHexString)
 	}
-	r.Seek(0, io.SeekStart)
-
+	r, err := os.Open(image)
+	if err != nil {
+		panic(err)
+	}
 	defer r.Close()
 	ExtractTarGz(r, workingDir)
 	layers, err := getLayers(filepath.Join(workingDir, "manifest.json"))
@@ -259,6 +361,111 @@ func main() {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err = cmd.Run()
+	if err != nil {
+		panic(err)
+	}
+
+	if opts.Output == "" {
+		return
+	}
+
+	if verbose {
+		fmt.Fprintf(os.Stderr, "outputing image to %s\n", opts.Output)
+	}
+
+	outputDir, err := os.MkdirTemp("", "")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("output dir: %s\n", outputDir)
+	defer os.RemoveAll(outputDir)
+
+	rootFSPath := filepath.Join(outputDir, "rootfs.tar.gz")
+	out, err := os.Create(rootFSPath)
+	if err != nil {
+		panic(err)
+	}
+	defer out.Close()
+
+	err = CreateTarGz(rootFS, out)
+	if err != nil {
+		panic(err)
+	}
+
+	outputRootFSTarGzSha256, err := getSha256String(rootFSPath)
+	if err != nil {
+		panic(err)
+	}
+	rootFSName := fmt.Sprintf("%s.tar.gz", outputRootFSTarGzSha256)
+	err = os.Rename(rootFSPath, filepath.Join(outputDir, rootFSName))
+	if err != nil {
+		panic(err)
+	}
+
+	imageConfig := imagespec.Image{
+		Platform: imagespec.Platform{
+			Architecture: "amd64", // TODO
+			OS:           "linux",
+		},
+		Config: imagespec.ImageConfig{
+			Env: []string{
+				"PATH=/bin:/usr/bin", // TODO
+			},
+		},
+		RootFS: imagespec.RootFS{
+			Type: "layers",
+			DiffIDs: []digest.Digest{
+				digest.Digest(fmt.Sprintf("sha256:%s", outputRootFSTarGzSha256)),
+			},
+		},
+	}
+	imageConfigJSON, err := json.Marshal(imageConfig)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("%s\n", imageConfigJSON)
+
+	h := sha256.New()
+	h.Write(imageConfigJSON)
+	imageConfigJSONSha256 := hex.EncodeToString(h.Sum(nil))
+
+	imageConfigName := fmt.Sprintf("sha256:%s", imageConfigJSONSha256)
+	imageConfigJSONFile, err := os.Create(filepath.Join(outputDir, imageConfigName))
+	if err != nil {
+		panic(err)
+	}
+	defer imageConfigJSONFile.Close()
+	_, err = imageConfigJSONFile.Write(imageConfigJSON)
+	if err != nil {
+		panic(err)
+	}
+
+	imageManifest := Manifest{
+		Config: imageConfigName,
+		Layers: []string{rootFSName},
+	}
+	imageManifestJson, err := json.Marshal([]Manifest{imageManifest})
+	if err != nil {
+		panic(err)
+	}
+
+	imageManifestJsonFile, err := os.Create(filepath.Join(outputDir, "manifest.json"))
+	if err != nil {
+		panic(err)
+	}
+	defer imageManifestJsonFile.Close()
+	_, err = imageManifestJsonFile.Write(imageManifestJson)
+	if err != nil {
+		panic(err)
+	}
+
+	outputImage, err := os.Create(opts.Output)
+	if err != nil {
+		panic(err)
+	}
+	defer outputImage.Close()
+
+	err = CreateTarGz(outputDir, outputImage)
 	if err != nil {
 		panic(err)
 	}

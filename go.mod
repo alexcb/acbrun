@@ -4,6 +4,8 @@ go 1.21.6
 
 require (
 	github.com/jessevdk/go-flags v1.6.1
+	github.com/opencontainers/go-digest v1.0.0
+	github.com/opencontainers/image-spec v1.1.0
 	github.com/tidwall/sjson v1.2.5
 )
 

@@ -54,3 +54,13 @@ Then download and save files locally
 Then you can use the apk packages offline:
 
     sudo ./acbrun --bind-local-dir sample-images/alpine-3.20.3.tar.gz e99e5d7440c1f31eaa77d84b8d87a8901efde3a1be445161e17bd9a9ea6707c8 containerName "rm /etc/apk/repositories && apk add --no-network --no-cache --allow-untrusted /local-dir/scratch/*.apk && python3 --version"
+
+## Outputting an Image
+
+use the `--output` flag to export the image after running, for example:
+
+    $ sudo acbrun --output my-output-image.tar.gz sample-images/alpine-3.20.3.tar.gz e99e5d7440c1f31eaa77d84b8d87a8901efde3a1be445161e17bd9a9ea6707c8 containerName "echo hello world > /root/data"
+
+You can then use the new image:
+
+    $ sudo acbrun my-output-image.tar.gz skip-sha256-validation containerName "ls -la /root/data && cat /root/data"
