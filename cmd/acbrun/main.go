@@ -311,6 +311,13 @@ func main() {
 				fmt.Fprintf(os.Stderr, "reentrant mode found existing directory %s; skipping creation step\n", workingDir)
 			}
 		}
+		if needsCreation {
+			err = os.Mkdir(workingDir, 0755)
+			if err != nil {
+				panic(err)
+			}
+		}
+
 	} else {
 		needsCreation = true
 		var err error
