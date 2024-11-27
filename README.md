@@ -8,7 +8,7 @@ A light wrapper around runc, which requires a tar.gz of a rootfs. This tool does
 
 ## Example run
 
-    $ sudo acbrun --verbose --keep sample-images/alpine-3.20.3.tar.gz c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 containerName "ls -la"
+    $ sudo acbrun --verbose --keep sample-images/alpine-3.20.3.tar.gz c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 "ls -la"
     keeping temporary working directory: /tmp/2120123023
     sample-images/alpine-3.20.3.tar.gz sha256sum of c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 validation complete
     extracting da9db072f522755cbeb85be2b3f84059b70571b229512f1571d9217b77e1087f.tar.gz
@@ -49,21 +49,21 @@ First make a directory for outputs:
 
 Then download and save files locally
 
-    sudo ./acbrun --bind-local-dir --host-network sample-images/alpine-3.20.3.tar.gz c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 containerName "echo 'nameserver 8.8.8.8' > /etc/resolv.conf && apk update && cd /local-dir/scratch/ && apk fetch --recursive python3"
+    sudo ./acbrun --bind-local-dir --host-network sample-images/alpine-3.20.3.tar.gz c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 "echo 'nameserver 8.8.8.8' > /etc/resolv.conf && apk update && cd /local-dir/scratch/ && apk fetch --recursive python3"
 
 Then you can use the apk packages offline:
 
-    sudo ./acbrun --bind-local-dir sample-images/alpine-3.20.3.tar.gz c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 containerName "rm /etc/apk/repositories && apk add --no-network --no-cache --allow-untrusted /local-dir/scratch/*.apk && python3 --version"
+    sudo ./acbrun --bind-local-dir sample-images/alpine-3.20.3.tar.gz c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 "rm /etc/apk/repositories && apk add --no-network --no-cache --allow-untrusted /local-dir/scratch/*.apk && python3 --version"
 
 ## Outputting an Image
 
 use the `--output` flag to export the image after running, for example:
 
-    $ sudo acbrun --output my-output-image.tar.gz sample-images/alpine-3.20.3.tar.gz c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 containerName "echo hello world > /root/data"
+    $ sudo acbrun --output my-output-image.tar.gz sample-images/alpine-3.20.3.tar.gz c0d141e28aea48a56c28650de3ceef70767e3d14da5e6d13f4cc68489e97a3e8 "echo hello world > /root/data"
 
 You can then use the new image:
 
-    $ sudo acbrun my-output-image.tar.gz skip-sha256-validation containerName "ls -la /root/data && cat /root/data"
+    $ sudo acbrun my-output-image.tar.gz skip-sha256-validation "ls -la /root/data && cat /root/data"
 
 You can even load them into docker:
 

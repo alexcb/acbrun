@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	_ "embed"
@@ -15,11 +16,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/jessevdk/go-flags"
 	"github.com/opencontainers/go-digest"
 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/tidwall/sjson"
+	"golang.org/x/exp/rand"
 )
 
 //go:embed config.json
@@ -32,7 +35,9 @@ var opts struct {
 	Keep         bool   `long:"keep" description:"Keep temporary working directory"`
 	HostNetwork  bool   `long:"host-network" description:"Allow host network access"`
 	BindLocalDir bool   `long:"bind-local-dir" description:"Bind current working directory to /local-dir"`
+	Reentrant    bool   `long:"reentrant" description:"Keep container filesystem intact and allow multiple or concurrent runs"`
 	Output       string `long:"output" description:"Output image after execution"`
+	Name         string `long:"name" description:"Container name"`
 }
 
 func ExtractTarGz(gzipStream io.Reader, dst string) {
@@ -190,6 +195,10 @@ type Manifest struct {
 	Layers   []string `json:"Layers,omitempty"`
 }
 
+type RuncState struct {
+	Status string `json:"status"`
+}
+
 func getLayers(manifestPath string) ([]string, error) {
 	manifestFile, err := os.Open(manifestPath)
 	if err != nil {
@@ -234,6 +243,23 @@ func getSha256String(path string) (string, error) { // TODO FIXME, docker comput
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+const (
+	letterIdxBits = 6                    // 6 bits to represent a letter index
+	letterIdxMask = 1<<letterIdxBits - 1 // All 1-bits, as many as letterIdxBits
+)
+
+func RandStringBytesMask(n int) string {
+	b := make([]byte, n)
+	for i := 0; i < n; {
+		if idx := int(rand.Int63() & letterIdxMask); idx < len(letterBytes) {
+			b[i] = letterBytes[idx]
+			i++
+		}
+	}
+	return string(b)
+}
+
 func main() {
 
 	args, err := flags.ParseArgs(&opts, os.Args)
@@ -245,77 +271,121 @@ func main() {
 	if len(args) > 0 {
 		progName = args[0]
 	}
-	if len(args) != 5 {
+	if len(args) != 4 {
 		fmt.Fprintf(os.Stderr, "usage: %s <image.tar.gz> <sha256sum> <container name> <command>\n", progName)
 		os.Exit(1)
 	}
 	image := args[1]
 	expectedImageSha256Sum := args[2]
-	containerName := args[3]
-	command := args[4]
+	command := args[3]
 
-	workingDir, err := os.MkdirTemp("", "")
-	if err != nil {
-		panic(err)
-	}
-	if opts.Keep {
-		fmt.Printf("keeping temporary working directory: %s\n", workingDir)
-	} else {
-		defer os.RemoveAll(workingDir)
-	}
-
-	actualSha256HashHexString, err := getSha256String(image)
-	if err != nil {
-		panic(err)
-	}
-
-	if actualSha256HashHexString != expectedImageSha256Sum {
-		if expectedImageSha256Sum == "skip-sha256-validation" {
-			fmt.Fprintf(os.Stderr, "WARNING: continuing due to skip-sha256-validation option (actual value is %s)\n", actualSha256HashHexString)
-		} else {
-			fmt.Fprintf(os.Stderr, "expected sha256 sum %s does not match actual sum of %s: %s\n", expectedImageSha256Sum, image, actualSha256HashHexString)
+	containerName := opts.Name
+	if containerName == "" {
+		if opts.Reentrant {
+			fmt.Fprintf(os.Stderr, "error: the --reentrant mode requires a --name value\n")
 			os.Exit(1)
 		}
-	}
-	if verbose {
-		fmt.Fprintf(os.Stderr, "%s sha256sum of %s validation complete\n", image, actualSha256HashHexString)
-	}
-	r, err := os.Open(image)
-	if err != nil {
-		panic(err)
-	}
-	defer r.Close()
-	ExtractTarGz(r, workingDir)
-	layers, err := getLayers(filepath.Join(workingDir, "manifest.json"))
-	if err != nil {
-		panic(err)
-	}
-	if len(layers) == 0 {
-		panic("no layer data")
-	}
-	rootFS := filepath.Join(workingDir, "rootfs")
-	if err := os.Mkdir(rootFS, 0755); err != nil {
-		panic(err)
-	}
-	for _, layer := range layers {
+		containerName = RandStringBytesMask(12)
 		if verbose {
-			fmt.Fprintf(os.Stderr, "extracting %s\n", layer)
+			fmt.Fprintf(os.Stderr, "using random container name %s\n", containerName)
 		}
-		r, err := os.Open(filepath.Join(workingDir, layer))
+	}
+
+	var workingDir string
+	var needsCreation bool
+	if opts.Reentrant {
+		workingDir = filepath.Join("/tmp", containerName)
+		_, err := os.Stat(workingDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				fmt.Printf("got %s\n", err)
+				needsCreation = true
+			} else {
+				panic(err)
+			}
+		}
+		if verbose {
+			if needsCreation {
+				fmt.Fprintf(os.Stderr, "reentrant mode did not find existing directory %s; it will create it\n", workingDir)
+			} else {
+				fmt.Fprintf(os.Stderr, "reentrant mode found existing directory %s; skipping creation step\n", workingDir)
+			}
+		}
+	} else {
+		needsCreation = true
+		var err error
+		workingDir, err = os.MkdirTemp("", fmt.Sprintf("acbrun-%s", containerName))
+		if err != nil {
+			panic(err)
+		}
+		if opts.Keep {
+			fmt.Printf("keeping temporary working directory: %s\n", workingDir)
+		} else {
+			defer os.RemoveAll(workingDir)
+		}
+	}
+
+	rootFS := filepath.Join(workingDir, "rootfs")
+	if needsCreation {
+		actualSha256HashHexString, err := getSha256String(image)
+		if err != nil {
+			panic(err)
+		}
+
+		if actualSha256HashHexString != expectedImageSha256Sum {
+			if expectedImageSha256Sum == "skip-sha256-validation" {
+				fmt.Fprintf(os.Stderr, "WARNING: continuing due to skip-sha256-validation option (actual value is %s)\n", actualSha256HashHexString)
+			} else {
+				fmt.Fprintf(os.Stderr, "expected sha256 sum %s does not match actual sum of %s: %s\n", expectedImageSha256Sum, image, actualSha256HashHexString)
+				os.Exit(1)
+			}
+		}
+		if verbose {
+			fmt.Fprintf(os.Stderr, "%s sha256sum of %s validation complete\n", image, actualSha256HashHexString)
+		}
+		r, err := os.Open(image)
 		if err != nil {
 			panic(err)
 		}
 		defer r.Close()
-		ExtractTarGz(r, rootFS)
+		ExtractTarGz(r, workingDir)
+		layers, err := getLayers(filepath.Join(workingDir, "manifest.json"))
+		if err != nil {
+			panic(err)
+		}
+		if len(layers) == 0 {
+			panic("no layer data")
+		}
+		if err := os.Mkdir(rootFS, 0755); err != nil {
+			panic(err)
+		}
+		for _, layer := range layers {
+			if verbose {
+				fmt.Fprintf(os.Stderr, "extracting %s\n", layer)
+			}
+			r, err := os.Open(filepath.Join(workingDir, layer))
+			if err != nil {
+				panic(err)
+			}
+			defer r.Close()
+			ExtractTarGz(r, rootFS)
+		}
 	}
 
 	configJSON := configJSONTemplate
 
-	configJSON, err = sjson.Set(configJSON, "process.args", []string{"sh", "-c", command})
-	if err != nil {
-		panic(err)
+	if opts.Reentrant {
+		fmt.Printf("while true hack\n")
+		configJSON, err = sjson.Set(configJSON, "process.args", []string{"sh", "-c", "while true; do sleep 1; done"})
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		configJSON, err = sjson.Set(configJSON, "process.args", []string{"sh", "-c", command})
+		if err != nil {
+			panic(err)
+		}
 	}
-
 	if !opts.HostNetwork {
 		configJSON, err = sjson.Set(configJSON, "linux.namespaces.-1", map[string]string{"type": "network"})
 		if err != nil {
@@ -343,11 +413,6 @@ func main() {
 
 	}
 
-	configJSON, err = sjson.Set(configJSON, "process.args", []string{"sh", "-c", command})
-	if err != nil {
-		panic(err)
-	}
-
 	newConfigFile, err := os.Create(filepath.Join(workingDir, "config.json"))
 	if err != nil {
 		panic(err)
@@ -361,13 +426,61 @@ func main() {
 	if verbose {
 		fmt.Fprintf(os.Stderr, "running runc\n")
 	}
-	cmd := exec.Command("runc", "run", containerName)
-	cmd.Dir = workingDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
-	if err != nil {
-		panic(err)
+	needsRun := true
+	if opts.Reentrant {
+		cmd := exec.Command("runc", "state", containerName)
+		cmd.Dir = workingDir
+		var outb, errb bytes.Buffer
+		cmd.Stdout = &outb
+		cmd.Stderr = &errb
+		err = cmd.Run()
+		stdoutStr := outb.String()
+		stderrStr := errb.String()
+		if err != nil {
+			if !strings.Contains(stderrStr, "\"container does not exist\"") {
+				fmt.Fprintf(os.Stderr, "runc: %s\n", stderrStr)
+				panic(err)
+			}
+		} else {
+			var runcState RuncState
+			err = json.Unmarshal([]byte(stdoutStr), &runcState)
+			if err != nil {
+				panic(err)
+			}
+			if runcState.Status != "running" {
+				panic("exepected running state")
+			}
+			if verbose {
+				fmt.Fprintf(os.Stderr, "container %s already running\n", containerName)
+			}
+			needsRun = false
+		}
+	}
+	if needsRun {
+		commandArgs := []string{"runc", "run"}
+		if opts.Reentrant {
+			commandArgs = append(commandArgs, "-d")
+		}
+		commandArgs = append(commandArgs, containerName)
+		cmd := exec.Command(commandArgs[0], commandArgs[1:]...)
+		cmd.Dir = workingDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err = cmd.Run()
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	if opts.Reentrant {
+		cmd := exec.Command("runc", "exec", containerName, "/bin/sh", "-c", command)
+		cmd.Dir = workingDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err = cmd.Run()
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	if opts.Output == "" {

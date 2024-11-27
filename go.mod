@@ -1,12 +1,15 @@
 module github.com/alexcb/acbrun/v2
 
-go 1.21.6
+go 1.22.0
+
+toolchain go1.23.3
 
 require (
 	github.com/jessevdk/go-flags v1.6.1
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.0
 	github.com/tidwall/sjson v1.2.5
+	golang.org/x/exp v0.0.0-20241108190413-2d47ceb2692f
 )
 
 require (
