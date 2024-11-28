@@ -466,13 +466,27 @@ func main() {
 	if needsRun {
 		commandArgs := []string{"runc", "run"}
 		if opts.Reentrant {
-			commandArgs = append(commandArgs, "-d")
+			commandArgs = append(commandArgs, "--detach")
 		}
 		commandArgs = append(commandArgs, containerName)
 		cmd := exec.Command(commandArgs[0], commandArgs[1:]...)
 		cmd.Dir = workingDir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		if !opts.Reentrant {
+			// whenever runc -d is used, if stdout or stderr are specified, it causes
+			// commands like "./acbrun ... | cat" to hang
+			// this needs to be fixed somehow, since we need to surface errors if runc run -d fails
+			// note that is also fails when we give it a bytes buffer or even a custom buffer that doesnt even print
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+		}
+
+		// TODO I think we need to create some sort of FILE-based stdout/stderr connection here
+		// where we can completely detach it from this current process
+		// or clean it up after the Run() comes back.
+		// the issue might be related to the "runc --detach" process continuing to persist AFTER
+		// this go process returns
+		// This seems related: https://github.com/opencontainers/runc/issues/1721
+
 		err = cmd.Run()
 		if err != nil {
 			panic(err)
