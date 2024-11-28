@@ -36,6 +36,7 @@ var opts struct {
 	HostNetwork  bool   `long:"host-network" description:"Allow host network access"`
 	BindLocalDir bool   `long:"bind-local-dir" description:"Bind current working directory to /local-dir"`
 	Reentrant    bool   `long:"reentrant" description:"Keep container filesystem intact and allow multiple or concurrent runs"`
+	Interactive  bool   `long:"interactive" description:"pass through stdin"`
 	Output       string `long:"output" description:"Output image after execution"`
 	Name         string `long:"name" description:"Container name"`
 }
@@ -382,7 +383,6 @@ func main() {
 	configJSON := configJSONTemplate
 
 	if opts.Reentrant {
-		fmt.Printf("while true hack\n")
 		configJSON, err = sjson.Set(configJSON, "process.args", []string{"sh", "-c", "while true; do sleep 1; done"})
 		if err != nil {
 			panic(err)
@@ -417,7 +417,13 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
+	}
 
+	if opts.Interactive && !opts.Reentrant {
+		configJSON, err = sjson.Set(configJSON, "process.terminal", true)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	newConfigFile, err := os.Create(filepath.Join(workingDir, "config.json"))
@@ -480,6 +486,10 @@ func main() {
 			cmd.Stderr = os.Stderr
 		}
 
+		if opts.Interactive {
+			cmd.Stdin = os.Stdin
+		}
+
 		// TODO I think we need to create some sort of FILE-based stdout/stderr connection here
 		// where we can completely detach it from this current process
 		// or clean it up after the Run() comes back.
@@ -494,10 +504,18 @@ func main() {
 	}
 
 	if opts.Reentrant {
-		cmd := exec.Command("runc", "exec", containerName, "/bin/sh", "-c", command)
+		commandArgs := []string{"runc", "exec"}
+		if opts.Interactive {
+			commandArgs = append(commandArgs, "--tty")
+		}
+		commandArgs = append(commandArgs, containerName, "/bin/sh", "-c", command)
+		cmd := exec.Command(commandArgs[0], commandArgs[1:]...)
 		cmd.Dir = workingDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		if opts.Interactive {
+			cmd.Stdin = os.Stdin
+		}
 		err = cmd.Run()
 		if err != nil {
 			panic(err)
