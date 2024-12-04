@@ -11,10 +11,10 @@ import (
 	"path/filepath"
 )
 
-func ExtractTarGz(gzipStream io.Reader, dst string) {
+func ExtractTarGz(gzipStream io.Reader, dst string) (err error) {
 	uncompressedStream, err := gzip.NewReader(gzipStream)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	tarReader := tar.NewReader(uncompressedStream)
@@ -29,49 +29,50 @@ func ExtractTarGz(gzipStream io.Reader, dst string) {
 		}
 
 		if err != nil {
-			panic(err)
+			return err
 		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.Mkdir(filepath.Join(dst, header.Name), header.FileInfo().Mode()); err != nil {
 				if !errors.Is(err, os.ErrExist) {
-					panic(err)
+					return err
 				}
 			}
 		case tar.TypeReg:
 			outFile, err := os.OpenFile(filepath.Join(dst, header.Name), os.O_RDWR|os.O_CREATE|os.O_TRUNC, header.FileInfo().Mode())
 			if err != nil {
-				panic(err)
+				return err
 			}
 			defer func() {
-				err := outFile.Close()
-				if err != nil {
-					panic(err)
+				err2 := outFile.Close()
+				if err == nil {
+					err = err2
 				}
 			}()
 			if _, err := io.Copy(outFile, tarReader); err != nil {
-				panic(err)
+				return err
 			}
 		case tar.TypeLink:
 			hardLinks[filepath.Join(dst, header.Name)] = filepath.Join(dst, header.Linkname)
 		case tar.TypeSymlink:
 			err := os.Symlink(header.Linkname, filepath.Join(dst, header.Name))
 			if err != nil {
-				panic(err)
+				return err
 			}
 		default:
-			panic(fmt.Sprintf(
+			return fmt.Errorf(
 				"ExtractTarGz: uknown type: %v in %s",
 				header.Typeflag,
-				header.Name))
+				header.Name)
 		}
 	}
 	for k, v := range hardLinks {
 		if err := os.Link(v, k); err != nil {
-			panic(err)
+			return err
 		}
 	}
+	return nil
 }
 
 func CreateTarGz(srcDir string, buf io.Writer) error {
