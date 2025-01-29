@@ -100,11 +100,10 @@ func main() {
 	var workingDir string
 	var needsCreation bool
 	if opts.Reentrant {
-		workingDir = filepath.Join("/tmp", containerName)
+		workingDir = filepath.Join("/tmp", "acbrun-"+containerName)
 		_, err := os.Stat(workingDir)
 		if err != nil {
 			if os.IsNotExist(err) {
-				fmt.Printf("got %s\n", err)
 				needsCreation = true
 			} else {
 				panic(err)
@@ -132,7 +131,7 @@ func main() {
 			panic(err)
 		}
 		if opts.Keep {
-			fmt.Printf("keeping temporary working directory: %s\n", workingDir)
+			fmt.Fprintf(os.Stderr, "keeping temporary working directory: %s\n", workingDir)
 		} else {
 			defer os.RemoveAll(workingDir)
 		}
@@ -317,7 +316,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("output dir: %s\n", outputDir)
 	defer os.RemoveAll(outputDir)
 
 	rootFSPath := filepath.Join(outputDir, "rootfs.tar.gz")
@@ -363,7 +361,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("%s\n", imageConfigJSON)
 
 	h := sha256.New()
 	h.Write(imageConfigJSON)
