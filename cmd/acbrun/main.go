@@ -300,6 +300,9 @@ func main() {
 		}
 		err = cmd.Run()
 		if err != nil {
+			if exiterr, ok := err.(*exec.ExitError); ok {
+				os.Exit(exiterr.ExitCode())
+			}
 			panic(err)
 		}
 	}
